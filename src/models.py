@@ -207,6 +207,15 @@ class SafeDrugModel(nn.Module):
         self.tensor_ddi_mask_H = torch.FloatTensor(ddi_mask_H).to(device)
         self.init_weights()
 
+        # 输入是患者重复112遍，横着拼接112个药物，输出是一个112的列表
+        self.result_mlp = nn.Sequential(
+            nn.Linear(112 * 64 * 2, 112 * 16),
+            nn.Linear(112 * 16, 112 * 4),
+            nn.Linear(112 * 4, 112)
+        )
+
+        self.result_linear = nn.Linear(64, 112)
+
     def forward(self, input):
 
         # patient health representation
@@ -231,7 +240,7 @@ class SafeDrugModel(nn.Module):
             b_seq = self.basic_linear(b_seq)
             b = self.dropout(b_seq)
 
-            # 因为后面要和疾病/程序拼接，这里把基本数据扩充到和就诊次数一样的维度（用于timesnet的时候不要这个操作）
+            # 因为后面要和疾病/程序拼接，这里把基本数据扩充到和就诊次数一样的维度（用于timesNet的时候不要这个操作）
             b = b.repeat(1, len(input), 1)
             return b
 
@@ -266,7 +275,6 @@ class SafeDrugModel(nn.Module):
                 for item in adm[2]:
                     i3 = i3 + med_fix_embedding[item]
                 i3 = i3.view(1, 1, 64)
-                # print(i3.shape)
             else:
                 i3 = sum_embedding(
                     self.dropout(
@@ -320,19 +328,37 @@ class SafeDrugModel(nn.Module):
 
         query = self.query(patient_representations)[-1:, :]  # (seq, dim)
 
-        # MPNN embedding
-        MPNN_match = F.sigmoid(torch.mm(query, self.MPNN_emb.t()))
-        MPNN_att = self.MPNN_layernorm(MPNN_match + self.MPNN_output(MPNN_match))
+        # # MPNN embedding
+        # MPNN_match = F.sigmoid(torch.mm(query, self.MPNN_emb.t()))
+        # MPNN_att = self.MPNN_layernorm(MPNN_match + self.MPNN_output(MPNN_match))
+        #
+        # # local embedding
+        # bipartite_emb = self.bipartite_output(
+        #     F.sigmoid(self.bipartite_transform(query)), self.tensor_ddi_mask_H.t()
+        # )
 
-        # local embedding
-        bipartite_emb = self.bipartite_output(
-            F.sigmoid(self.bipartite_transform(query)), self.tensor_ddi_mask_H.t()
-        )
-
+        # 原文方法：用到的局部信息和全局信息的点击融合
         # result = torch.mul(bipartite_emb, MPNN_att)
 
         """自己改写的匹配方法"""
-        result = torch.matmul(query, med_fix_embedding.t())  # 这里生成的是（1，112）的一个矩阵，代表患者和每个药物的匹配值
+        # 方法一：利用患者表示和112个药物表示分别内积，生成的是（1，112）的一个矩阵，代表患者和每个药物的匹配值，无法收敛！！
+        # result = torch.matmul(query, med_fix_embedding.t())
+
+        # 方法二：把患者表示复制成112个，把112个药物表示跟他横着拼接起来，穿过一个线性层
+        # query = query.repeat(1, 112, 1)  # (1,64)->(1,112,64)
+        # query = query.view(1, 112 * 64)  # (1,112,64)->(1,112*64)
+
+        # med_embedding = med_fix_embedding.view(1, 112 * 64)  # (112,64)->(1,112*64)
+
+        # 方法三：不利用知识图谱的固定嵌入，直接利用前面训练的药物嵌入和这里的药物嵌入进行拼凑
+        # med_embedding = self.embeddings[2](torch.LongTensor(list(range(112))).to(self.device))
+        #
+        # med_embedding = med_embedding.view(1, 112 * 64)
+        # result = self.result_mlp(torch.cat([query, med_embedding], dim=-1))  # (1, 2*112*64)->(1,112)
+
+        # 方法四：直接把患者的表示放进来，通过几个线性层来看
+        result = self.result_linear(query)
+
         """"""
 
         neg_pred_prob = F.sigmoid(result)
