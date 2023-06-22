@@ -2,6 +2,7 @@
 基于知识图谱的药物组合推荐，总体框架改编来源safedrug
 
 使用方法：
+
 1.配置环境mimic.yaml
 
 2.运行src/SafeDrug.py
