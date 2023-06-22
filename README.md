@@ -3,7 +3,7 @@
 
 使用方法：
 
-1.配置环境mimic.yaml
+1.配置环境lx.yml
 
 2.运行src/SafeDrug.py
 
