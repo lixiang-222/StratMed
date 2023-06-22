@@ -1,15 +1,16 @@
+import argparse
+import os
+import time
+from collections import defaultdict
+
 import dill
 import numpy as np
-import argparse
-from collections import defaultdict
-from sklearn.metrics import jaccard_score
-from torch.optim import Adam
-import os
 import torch
-import time
-from models import SafeDrugModel
-from util import llprint, multi_label_metric, ddi_rate_score, get_n_params, buildMPNN
 import torch.nn.functional as F
+from torch.optim import Adam
+
+from models import SafeDrugModel
+from util import llprint, multi_label_metric, ddi_rate_score, buildMPNN
 
 torch.manual_seed(1203)
 np.random.seed(2048)
@@ -39,17 +40,42 @@ args = parser.parse_args()
 
 
 # evaluate
-def eval(model, data_eval, voc_size, epoch):
+def eval(model, data_eval, voc_size, epoch, med_kg_voc, kg_edge):
     model.eval()
 
     smm_record = []
     ja, prauc, avg_p, avg_r, avg_f1 = [[] for _ in range(5)]
+    """自己加入一些loss来看"""
+    loss_bce, loss_multi = [[] for _ in range(2)]
+
     med_cnt, visit_cnt = 0, 0
 
     for step, input in enumerate(data_eval):
         y_gt, y_pred, y_pred_prob, y_pred_label = [], [], [], []
         for adm_idx, adm in enumerate(input):
-            target_output, _ = model(input[: adm_idx + 1])
+            target_output, _ = model(input[: adm_idx + 1], med_kg_voc, kg_edge)
+
+            """自己加的loss，在输出时候用来看loss的改变，不训练"""
+            loss_bce_target = np.zeros((1, voc_size[2]))
+            loss_bce_target[:, adm[2]] = 1
+
+            loss_multi_target = np.full((1, voc_size[2]), -1)
+            for idx, item in enumerate(adm[2]):
+                loss_multi_target[0][idx] = item
+
+            device = torch.device("cpu")
+            # device = torch.device("cuda")
+
+            loss_bce1 = F.binary_cross_entropy_with_logits(
+                target_output, torch.FloatTensor(loss_bce_target).to(device)
+            )
+            loss_multi1 = F.multilabel_margin_loss(
+                F.sigmoid(target_output), torch.LongTensor(loss_multi_target).to(device)
+            )
+
+            loss_bce.append(loss_bce1)
+            loss_multi.append(loss_multi1)
+            """"""
 
             y_gt_tmp = np.zeros(voc_size[2])
             y_gt_tmp[adm[2]] = 1
@@ -86,14 +112,23 @@ def eval(model, data_eval, voc_size, epoch):
     # ddi rate
     ddi_rate = ddi_rate_score(smm_record, path="../data/output/ddi_A_final.pkl")
 
+    """列表转np"""
+    for i, num in enumerate(loss_multi):
+        loss_multi[i] = num.detach().cpu().numpy()
+    for i, num in enumerate(loss_bce):
+        loss_bce[i] = num.detach().cpu().numpy()
+
     llprint(
-        "\nDDI Rate: {:.4}, Jaccard: {:.4},  PRAUC: {:.4}, AVG_PRC: {:.4}, AVG_RECALL: {:.4}, AVG_F1: {:.4}, AVG_MED: {:.4}\n".format(
+        "\nDDI Rate: {:.4}, Jaccard: {:.4},  PRAUC: {:.4}, AVG_PRC: {:.4}, AVG_RECALL: {:.4}, AVG_F1: {:.4},"
+        "AVG_Lmulti: {:.4}, AVG_Lbce: {:.4}, AVG_MED: {:.4}\n".format(
             ddi_rate,
             np.mean(ja),
             np.mean(prauc),
             np.mean(avg_p),
             np.mean(avg_r),
             np.mean(avg_f1),
+            np.mean(loss_multi),
+            np.mean(loss_bce),
             med_cnt / visit_cnt,
         )
     )
@@ -118,7 +153,6 @@ def main():
     ddi_mask_path = "../data/output/ddi_mask_H.pkl"
     molecule_path = "../data/output/atc3toSMILES.pkl"
 
-    # device = torch.device("cuda:{}".format(args.cuda))
     device = torch.device("cpu")
     # device = torch.device("cuda")
 
@@ -139,8 +173,11 @@ def main():
                 len(ethnicity_voc.idx2word), len(gender_voc.idx2word), len(expire_voc.idx2word),
                 len(age_voc.idx2word))
     """"""
-    # voc_size = (len(diag_voc.idx2word), len(pro_voc.idx2word), len(med_voc.idx2word))
 
+    """自己写的药物和图谱中药物的映射"""
+    med_kg_voc = dill.load(open("../data/output/med_mapping.pkl", "rb"))
+    kg_edge = dill.load(open("../data/output/disease_atc_edge.pkl", "rb"))
+    """"""
     data = data[:5]  # 只取5个患者做测试用
 
     split_point = int(len(data) * 2 / 3)
@@ -149,18 +186,14 @@ def main():
     data_test = data[split_point: split_point + eval_len]
     data_eval = data[split_point + eval_len:]
 
-    MPNNSet, N_fingerprint, average_projection = buildMPNN(
-        molecule, med_voc.idx2word, 2, device
-    )
-
+    # MPNNSet, N_fingerprint, average_projection = buildMPNN(
+    #     molecule, med_voc.idx2word, 2, device
+    # )
 
     model = SafeDrugModel(
         voc_size,
         ddi_adj,
         ddi_mask_H,
-        MPNNSet,
-        N_fingerprint,
-        average_projection,
         emb_dim=args.dim,
         device=device,
     )
@@ -237,7 +270,7 @@ def main():
                 for idx, item in enumerate(adm[2]):
                     loss_multi_target[0][idx] = item
 
-                result, loss_ddi = model(seq_input)
+                result, loss_ddi = model(seq_input, med_kg_voc, kg_edge)
 
                 loss_bce = F.binary_cross_entropy_with_logits(
                     result, torch.FloatTensor(loss_bce_target).to(device)
@@ -272,7 +305,7 @@ def main():
         print()
         tic2 = time.time()
         ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_med = eval(
-            model, data_eval, voc_size, epoch
+            model, data_eval, voc_size, epoch,med_kg_voc, kg_edge
         )
         print(
             "training time: {}, test time: {}".format(
