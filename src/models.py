@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import GATConv
-from torch_geometric.utils import k_hop_subgraph
 
 """用来代替nn.Embedding的图网络"""
 
@@ -12,7 +11,7 @@ class MyGraphNet(torch.nn.Module):
     def __init__(self, item_number, embed_dim, device):
         super(MyGraphNet, self).__init__()
         self.device = device
-        self.item_embedding = torch.nn.Embedding(num_embeddings=item_number, embedding_dim=embed_dim)
+        self.item_embedding = nn.Embedding(num_embeddings=item_number, embedding_dim=embed_dim)
 
         self.conv1 = GATConv(embed_dim, 128)
         # self.pool1 = TopKPooling(128, ratio=0.8)
@@ -26,12 +25,14 @@ class MyGraphNet(torch.nn.Module):
 
         self.act1 = torch.nn.ReLU()
 
-    def forward(self, data, target_item=None):
+    def forward(self, data, mapping_item=None):
         x, edge_index, batch = data.x, data.edge_index, data.batch  # x:n*1,其中每个图里点的个数是不同的
         x = x.to(self.device)
         edge_index = edge_index.to(self.device)
         x = self.item_embedding(x)  # n*1*64 特征编码后的结果
         x = x.squeeze(1)  # n*64
+
+        # print(x[10838])
 
         x1 = F.relu(self.conv1(x, edge_index))  # n*128
         x2 = F.relu(self.conv2(x1, edge_index))  # n*256
@@ -43,7 +44,9 @@ class MyGraphNet(torch.nn.Module):
         x = self.act1(x)
         x = F.dropout(x, p=0.5, training=self.training)  # 这里的x是一个(1,64)的嵌入了，表示的是一个图
 
-        x = x[target_item]
+        # print(x[10838])
+
+        x = x[mapping_item]
 
         x = x.sum(dim=0).unsqueeze(dim=0)
 
@@ -64,10 +67,10 @@ class SafeDrugModel(nn.Module):
         self.device = device
 
         # 自己构建的疾病图嵌入(应该没用了）
-        self.diagnose_graph_emb = MyGraphNet(1958, emb_dim, device=device)
+        # self.diagnose_graph_emb = MyGraphNet(1958, emb_dim, device=device)
 
         # 自己构建的药物图嵌入
-        self.big_kg = MyGraphNet(14648, emb_dim, device=device)
+        self.kg_embedding = MyGraphNet(14648, emb_dim, device=device)
 
         # 构建疾病，程序，药物的embedding 用64维来构建  这里的+1是用来给padding用的
         self.embeddings = nn.ModuleList([nn.Embedding(vocab_size[i] + 1, emb_dim) for i in range(3)])
@@ -89,10 +92,13 @@ class SafeDrugModel(nn.Module):
         self.basic_linear = nn.Linear(5 * emb_dim, emb_dim)
 
         # 患者表示最后的表示
-        self.query = nn.Sequential(nn.ReLU(), nn.Linear(2 * emb_dim, emb_dim))
+        self.query_with_o3 = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(3 * emb_dim, 2 * emb_dim)
+        )
         # self.query = nn.Sequential(nn.ReLU(), nn.Linear(emb_dim, emb_dim))
 
-        self.result_mlp = nn.Linear(2 * emb_dim, 112)
+        # self.result_mlp = nn.Linear(2 * emb_dim, 112)
 
         # 拼接之后直接走线性层输出
         self.result_linear = nn.Sequential(
@@ -106,7 +112,7 @@ class SafeDrugModel(nn.Module):
         self.tensor_ddi_mask_H = torch.FloatTensor(ddi_mask_H).to(device)
         # self.init_weights()
 
-    def forward(self, input, med_kg_voc, kg_edge):
+    def forward(self, input, med_kg_voc, diag_kg_voc, kg_edge):
         # patient health representation
         # i1_seq = []
         # i2_seq = []
@@ -270,13 +276,47 @@ class SafeDrugModel(nn.Module):
 
         """对诊断和程序不用历史信息直接映射，对药物历史信息用gru表示"""
         adm = input[-1]
-        i1 = sum_embedding(
+        """用nn.Embedding直接做嵌入"""
+        # i1 = sum_embedding(
+        #     self.dropout(
+        #         self.embeddings[0](
+        #             torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)
+        #         )
+        #     )
+        # )
+        """用图谱结合nn.Embedding做嵌入"""
+        # 1.将诊断映射到知识图谱中
+        diag_in_kg = []  # 代表了本次就诊中疾病在知识图谱中的编号
+        diag_not_in_kg = []  # 代表了本次就诊中没有在图谱中的疾病在知识图谱中的编号
+        for diag in adm[0]:
+            if diag in diag_kg_voc.idx2word:
+                diag_in_kg.append(diag_kg_voc.idx2word[diag])
+            else:
+                diag_not_in_kg.append(diag)
+
+        # 2.将整个图和标志都输入到图神经网络之中
+        node_features = sorted(list(range(14648)))
+        x = torch.LongTensor(node_features).unsqueeze(1)  # 后面要做嵌入的变形
+
+        edge_index = torch.tensor(kg_edge, dtype=torch.long)
+
+        data = Data(x=x, edge_index=edge_index)
+
+        i1_in_kg = self.kg_embedding(data, mapping_item=diag_in_kg).unsqueeze(dim=0)
+
+        i1_not_in_kg = sum_embedding(
             self.dropout(
                 self.embeddings[0](
-                    torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)
+                    torch.LongTensor(diag_not_in_kg).unsqueeze(dim=0).to(self.device)
                 )
             )
         )
+
+        i1 = i1_in_kg + i1_not_in_kg
+
+        # print(self.embeddings[0](torch.LongTensor([6]).unsqueeze(dim=0)))
+
+        """"""
         i2 = sum_embedding(
             self.dropout(
                 self.embeddings[0](
@@ -285,38 +325,83 @@ class SafeDrugModel(nn.Module):
             )
         )
 
+        """不用当次就诊中药物padding的方法"""
+        # if len(input) > 1:
+        #     for adm in input:
+        #         if len(i3_seq) < len(input) - 1:
+        #             """方法一：正常利用embedding层做的嵌入"""
+        #             i3 = sum_embedding(
+        #                 self.dropout(
+        #                     self.embeddings[2](
+        #                         torch.LongTensor(adm[2]).unsqueeze(dim=0).to(self.device)
+        #                     )
+        #                 )
+        #             )
+        #             i3_seq.append(i3)
+        #
+        #     i3_seq = torch.cat(i3_seq, dim=1)  # (1,seq,dim)
+        #     o3, _ = self.encoders[2](i3_seq)
+        #     patient_representations = torch.cat([i1, i2, o3[:, -1:, :]], dim=-1).squeeze(  # 拼接输出(1,3*64)
+        #         dim=0
+        #     )
+        #     patient_representations = self.query_with_o3(patient_representations)
+        # else:
+        #     patient_representations = torch.cat([i1, i2], dim=-1).squeeze(  # 拼接输出(1,2*64)
+        #         dim=0
+        #     )
+        """"""
+
+        """使用药物padding的方法"""
         for adm in input:
             if len(i3_seq) < len(input) - 1:
                 """方法一：正常利用embedding层做的嵌入"""
                 # i3 = sum_embedding(
-                #     #             self.dropout(
-                #     #                 self.embeddings[2](
-                #     #                     torch.LongTensor(adm[2]).unsqueeze(dim=0).to(self.device)
-                #     #                 )
-                #     #             )
-                #     #         )
+                #     self.dropout(
+                #         self.embeddings[2](
+                #             torch.LongTensor(adm[2]).unsqueeze(dim=0).to(self.device)
+                #         )
+                #     )
+                # )
 
-                """方法二：对药物图谱的嵌入"""
-                # 把边变成tensor形式
+                """方法二：对药物图谱的嵌入，放整个图来学习"""
+                # 1.先将112的药物编号映射到整个图谱之中
+                med_in_kg = []  # 代表了本次就诊中药物在知识图谱中的编号
+                for med in adm[2]:
+                    med_in_kg.append(med_kg_voc.idx2word[med])
+
+                # 2.将整个图和标志都输入到图神经网络之中
+                node_features = sorted(list(range(14648)))
+                x = torch.LongTensor(node_features).unsqueeze(1)  # 后面要做嵌入的变形
+
                 edge_index = torch.tensor(kg_edge, dtype=torch.long)
 
-                # 代表了本次就诊中药物在知识图谱中的编号
-                med_seq = []
-                for med in adm[2]:
-                    med_seq.append(med_kg_voc[med])
+                data = Data(x=x, edge_index=edge_index)
 
-                # geometric中自带的函数k跳子图，返回的
-                # subset是子图中的节点（图谱编码，从小到大排好顺序的）
-                # sub_edge_index是子图中的边（按照子图定义的新编码）
-                # mapping是最开始的几个节点（med_seq）在子图新编码中的对照
-                # edge_mask没有用到，也不知道是什么
-                sub_set, sub_edge_index, mapping, edge_mask = k_hop_subgraph(med_seq, 2, edge_index, relabel_nodes=True)
-
-                # 构建data，输入到大图中
-                data = Data(x=sub_set, edge_index=sub_edge_index)
-                i3 = self.big_kg(data, target_item=mapping)
-
+                i3 = self.kg_embedding(data, mapping_item=med_in_kg)
                 i3 = i3.unsqueeze(dim=0)
+
+                """方法三：对药物图谱的嵌入，用子图的方式"""
+                # # 把边变成tensor形式
+                # edge_index = torch.tensor(kg_edge, dtype=torch.long)
+                #
+                # # 代表了本次就诊中药物在知识图谱中的编号
+                # med_seq = []
+                # for med in adm[2]:
+                #     med_seq.append(med_kg_voc[med])
+                #
+                # # geometric中自带的函数k跳子图，返回的
+                # # subset是子图中的节点（图谱编码，从小到大排好顺序的）
+                # # sub_edge_index是子图中的边（按照子图定义的新编码）
+                # # mapping是最开始的几个节点（med_seq）在子图新编码中的对照
+                # # edge_mask没有用到，也不知道是什么
+                # sub_set, sub_edge_index, mapping, edge_mask = k_hop_subgraph(med_seq, 2, edge_index, relabel_nodes=True)
+                #
+                # # 构建data，输入到大图中
+                # data = Data(x=sub_set, edge_index=sub_edge_index)
+                # i3 = self.big_kg(data, target_item=mapping)
+                #
+                # i3 = i3.unsqueeze(dim=0)
+
             else:
                 i3 = sum_embedding(
                     self.dropout(
@@ -330,16 +415,18 @@ class SafeDrugModel(nn.Module):
         i3_seq = torch.cat(i3_seq, dim=1)  # (1,seq,dim)
         o3, _ = self.encoders[2](i3_seq)
 
-
+        patient_representations = torch.cat([i1, i2, o3[:, -1:, :]], dim=-1).squeeze(  # 拼接输出(1,3*64)
+            dim=0
+        )  # (seq, dim*3)
         """"""
 
         """自己写的集成基本数据的方法，在用rnn的时候把基本数据扩充到和就诊次数一样的维度，不用rnn时候不用扩充"""
         # basic = basic_information_process(input)
 
         """这里做了改动，加入了新的b和o3"""
-        patient_representations = torch.cat([i1, i2, i3], dim=-1).squeeze(  # 拼接输出(1,3*64)
-            dim=0
-        )  # (seq, dim*3)
+        # patient_representations = torch.cat([i1, i2, o3[:, -1:, :]], dim=-1).squeeze(  # 拼接输出(1,3*64)
+        #     dim=0
+        # )  # (seq, dim*3)
 
         # # 原文中用的计算患者表示query的方式
         # query = self.query(patient_representations)[-1:, :]  # (seq, dim)
@@ -377,7 +464,7 @@ class SafeDrugModel(nn.Module):
 
         # 方法四：直接把患者的表示放进来，通过几个线性层来看
         result = self.result_linear(patient_representations)[-1:, :]
-        # result = torch.cat([query, o3[:, -1, :]], dim=-1)
+        # result = torch.cat([query, o3[:, -1:, :]], dim=-1)
         # result = self.result_mlp(result)[-1:, :]
 
         """"""

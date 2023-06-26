@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 
 from models import SafeDrugModel
-from util import llprint, multi_label_metric, ddi_rate_score, buildMPNN
+from util import llprint, multi_label_metric, ddi_rate_score
 
 torch.manual_seed(1203)
 np.random.seed(2048)
@@ -40,7 +40,7 @@ args = parser.parse_args()
 
 
 # evaluate
-def eval(model, data_eval, voc_size, epoch, med_kg_voc, kg_edge):
+def eval(model, data_eval, voc_size, epoch, med_kg_voc, diag_kg_voc, kg_edge, device):
     model.eval()
 
     smm_record = []
@@ -53,7 +53,7 @@ def eval(model, data_eval, voc_size, epoch, med_kg_voc, kg_edge):
     for step, input in enumerate(data_eval):
         y_gt, y_pred, y_pred_prob, y_pred_label = [], [], [], []
         for adm_idx, adm in enumerate(input):
-            target_output, _ = model(input[: adm_idx + 1], med_kg_voc, kg_edge)
+            target_output, _ = model(input[: adm_idx + 1], med_kg_voc, diag_kg_voc, kg_edge)
 
             """自己加的loss，在输出时候用来看loss的改变，不训练"""
             loss_bce_target = np.zeros((1, voc_size[2]))
@@ -63,15 +63,13 @@ def eval(model, data_eval, voc_size, epoch, med_kg_voc, kg_edge):
             for idx, item in enumerate(adm[2]):
                 loss_multi_target[0][idx] = item
 
-            device = torch.device("cpu")
-            # device = torch.device("cuda")
-
-            loss_bce1 = F.binary_cross_entropy_with_logits(
-                target_output, torch.FloatTensor(loss_bce_target).to(device)
-            )
-            loss_multi1 = F.multilabel_margin_loss(
-                F.sigmoid(target_output), torch.LongTensor(loss_multi_target).to(device)
-            )
+            with torch.no_grad():
+                loss_bce1 = F.binary_cross_entropy_with_logits(
+                    target_output, torch.FloatTensor(loss_bce_target).to(device)
+                ).cpu()
+                loss_multi1 = F.multilabel_margin_loss(
+                    F.sigmoid(target_output), torch.LongTensor(loss_multi_target).to(device)
+                ).cpu()
 
             loss_bce.append(loss_bce1)
             loss_multi.append(loss_multi1)
@@ -113,10 +111,8 @@ def eval(model, data_eval, voc_size, epoch, med_kg_voc, kg_edge):
     ddi_rate = ddi_rate_score(smm_record, path="../data/output/ddi_A_final.pkl")
 
     """列表转np"""
-    for i, num in enumerate(loss_multi):
-        loss_multi[i] = num.detach().cpu().numpy()
-    for i, num in enumerate(loss_bce):
-        loss_bce[i] = num.detach().cpu().numpy()
+    loss_multi = np.array(loss_multi)
+    loss_bce = np.array(loss_bce)
 
     llprint(
         "\nDDI Rate: {:.4}, Jaccard: {:.4},  PRAUC: {:.4}, AVG_PRC: {:.4}, AVG_RECALL: {:.4}, AVG_F1: {:.4},"
@@ -175,10 +171,11 @@ def main():
     """"""
 
     """自己写的药物和图谱中药物的映射"""
-    med_kg_voc = dill.load(open("../data/output/med_mapping.pkl", "rb"))
-    kg_edge = dill.load(open("../data/output/disease_atc_edge.pkl", "rb"))
+    med_kg_voc = dill.load(open("../data/output/med_map.pkl", "rb"))
+    diag_kg_voc = dill.load(open("../data/output/diseases_map.pkl", "rb"))
+    kg_edge = dill.load(open("../data/output/new_kg_edges.pkl", "rb"))
     """"""
-    data = data[:5]  # 只取5个患者做测试用
+    data = data[:5]  # 本地电脑上测试用5个数据
 
     split_point = int(len(data) * 2 / 3)
     data_train = data[:split_point]
@@ -224,7 +221,7 @@ def main():
                 data_test, round(len(data_test) * 0.8), replace=True
             )
             ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_med = eval(
-                model, test_sample, voc_size, 0
+                model, data_eval, voc_size, 0, med_kg_voc, diag_kg_voc, kg_edge, device
             )
             result.append([ddi_rate, ja, avg_f1, prauc, avg_med])
 
@@ -251,7 +248,7 @@ def main():
     best_epoch, best_ja = 0, 0
 
     # EPOCH = 50
-    EPOCH = 3
+    EPOCH = 3  # 测试用3个epoch
     for epoch in range(EPOCH):
         tic = time.time()
         print("\nepoch {} --------------------------".format(epoch + 1))
@@ -270,7 +267,7 @@ def main():
                 for idx, item in enumerate(adm[2]):
                     loss_multi_target[0][idx] = item
 
-                result, loss_ddi = model(seq_input, med_kg_voc, kg_edge)
+                result, loss_ddi = model(seq_input, med_kg_voc, diag_kg_voc, kg_edge)
 
                 loss_bce = F.binary_cross_entropy_with_logits(
                     result, torch.FloatTensor(loss_bce_target).to(device)
@@ -305,7 +302,7 @@ def main():
         print()
         tic2 = time.time()
         ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_med = eval(
-            model, data_eval, voc_size, epoch,med_kg_voc, kg_edge
+            model, data_eval, voc_size, epoch, med_kg_voc, diag_kg_voc, kg_edge, device
         )
         print(
             "training time: {}, test time: {}".format(
@@ -350,7 +347,7 @@ def main():
             best_epoch = epoch
             best_ja = ja
 
-        print("best_epoch: {}".format(best_epoch))
+        print("best_epoch: {}".format(best_epoch + 1))
 
     dill.dump(
         history,
