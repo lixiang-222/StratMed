@@ -8,10 +8,18 @@ from torch_geometric.nn import GATConv
 
 
 class MyGraphNet(torch.nn.Module):
-    def __init__(self, item_number, embed_dim, device):
+    def __init__(self, pretrained_embed, device):
         super(MyGraphNet, self).__init__()
         self.device = device
-        self.item_embedding = nn.Embedding(num_embeddings=item_number, embedding_dim=embed_dim)
+        pretrained_embed = torch.tensor(pretrained_embed)
+
+        # 加入预训练的方法
+        embed_dim = pretrained_embed.size(1)
+        num_embeddings = pretrained_embed.size(0)
+        self.item_embedding = nn.Embedding(embedding_dim=embed_dim, num_embeddings=num_embeddings)
+        self.item_embedding.weight.data.copy_(pretrained_embed)
+
+        # self.item_embedding = nn.Embedding(num_embeddings=item_number, embedding_dim=embed_dim)
 
         self.conv1 = GATConv(embed_dim, 128)
         # self.pool1 = TopKPooling(128, ratio=0.8)
@@ -21,7 +29,7 @@ class MyGraphNet(torch.nn.Module):
         # self.pool3 = TopKPooling(128, ratio=0.8)
         self.dropout = nn.Dropout(p=0.3)
 
-        self.lin1 = torch.nn.Linear(128, embed_dim)
+        self.lin1 = torch.nn.Linear(128, 64)
 
         self.act1 = torch.nn.ReLU()
 
@@ -44,7 +52,7 @@ class MyGraphNet(torch.nn.Module):
         x = self.act1(x)
         x = F.dropout(x, p=0.5, training=self.training)  # 这里的x是一个(1,64)的嵌入了，表示的是一个图
 
-        # print(x[10838])
+        # print("diag7(in graph)", x[10838])
 
         x = x[mapping_item]
 
@@ -60,7 +68,8 @@ class SafeDrugModel(nn.Module):
             ddi_adj,
             ddi_mask_H,
             emb_dim=256,
-            device=torch.device("cpu:0")
+            device=torch.device("cpu:0"),
+            pretrained_embed=None
     ):
         super(SafeDrugModel, self).__init__()
 
@@ -70,7 +79,7 @@ class SafeDrugModel(nn.Module):
         # self.diagnose_graph_emb = MyGraphNet(1958, emb_dim, device=device)
 
         # 自己构建的药物图嵌入
-        self.kg_embedding = MyGraphNet(14648, emb_dim, device=device)
+        self.kg_embedding = MyGraphNet(pretrained_embed, device)
 
         # 构建疾病，程序，药物的embedding 用64维来构建  这里的+1是用来给padding用的
         self.embeddings = nn.ModuleList([nn.Embedding(vocab_size[i] + 1, emb_dim) for i in range(3)])
@@ -277,44 +286,46 @@ class SafeDrugModel(nn.Module):
         """对诊断和程序不用历史信息直接映射，对药物历史信息用gru表示"""
         adm = input[-1]
         """用nn.Embedding直接做嵌入"""
-        # i1 = sum_embedding(
-        #     self.dropout(
-        #         self.embeddings[0](
-        #             torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)
-        #         )
-        #     )
-        # )
-        """用图谱结合nn.Embedding做嵌入"""
-        # 1.将诊断映射到知识图谱中
-        diag_in_kg = []  # 代表了本次就诊中疾病在知识图谱中的编号
-        diag_not_in_kg = []  # 代表了本次就诊中没有在图谱中的疾病在知识图谱中的编号
-        for diag in adm[0]:
-            if diag in diag_kg_voc.idx2word:
-                diag_in_kg.append(diag_kg_voc.idx2word[diag])
-            else:
-                diag_not_in_kg.append(diag)
-
-        # 2.将整个图和标志都输入到图神经网络之中
-        node_features = sorted(list(range(14648)))
-        x = torch.LongTensor(node_features).unsqueeze(1)  # 后面要做嵌入的变形
-
-        edge_index = torch.tensor(kg_edge, dtype=torch.long)
-
-        data = Data(x=x, edge_index=edge_index)
-
-        i1_in_kg = self.kg_embedding(data, mapping_item=diag_in_kg).unsqueeze(dim=0)
-
-        i1_not_in_kg = sum_embedding(
+        i1 = sum_embedding(
             self.dropout(
                 self.embeddings[0](
-                    torch.LongTensor(diag_not_in_kg).unsqueeze(dim=0).to(self.device)
+                    torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)
                 )
             )
         )
-
-        i1 = i1_in_kg + i1_not_in_kg
-
-        # print(self.embeddings[0](torch.LongTensor([6]).unsqueeze(dim=0)))
+        """用图谱结合nn.Embedding做嵌入"""
+        # # 1.将诊断映射到知识图谱中
+        # diag_in_kg = []  # 代表了本次就诊中疾病在知识图谱中的编号
+        # diag_not_in_kg = []  # 代表了本次就诊中没有在图谱中的疾病在知识图谱中的编号
+        # for diag in adm[0]:
+        #     if diag in diag_kg_voc.idx2word:
+        #         diag_in_kg.append(diag_kg_voc.idx2word[diag])
+        #     else:
+        #         diag_not_in_kg.append(diag)
+        #
+        # # 2.将整个图和标志都输入到图神经网络之中
+        # node_features = sorted(list(range(14648)))
+        # x = torch.LongTensor(node_features).unsqueeze(1)  # 后面要做嵌入的变形
+        #
+        # edge_index = torch.tensor(kg_edge, dtype=torch.long)
+        #
+        # data = Data(x=x, edge_index=edge_index)
+        #
+        # i1_in_kg = self.kg_embedding(data, mapping_item=diag_in_kg).unsqueeze(dim=0)
+        #
+        # i1_not_in_kg = sum_embedding(
+        #     self.dropout(
+        #         self.embeddings[0](
+        #             torch.LongTensor(diag_not_in_kg).unsqueeze(dim=0).to(self.device)
+        #         )
+        #     )
+        # )
+        #
+        # # print("1", self.dropout(self.embeddings[0](torch.LongTensor([6]).unsqueeze(dim=0).to(self.device))))
+        #
+        # i1 = i1_in_kg + i1_not_in_kg
+        #
+        # # print("diag6(not in graph)", self.embeddings[0](torch.LongTensor([6]).unsqueeze(dim=0).to(self.device)))
 
         """"""
         i2 = sum_embedding(
@@ -370,7 +381,7 @@ class SafeDrugModel(nn.Module):
                     med_in_kg.append(med_kg_voc.idx2word[med])
 
                 # 2.将整个图和标志都输入到图神经网络之中
-                node_features = sorted(list(range(14648)))
+                node_features = sorted(list(range(14647)))
                 x = torch.LongTensor(node_features).unsqueeze(1)  # 后面要做嵌入的变形
 
                 edge_index = torch.tensor(kg_edge, dtype=torch.long)

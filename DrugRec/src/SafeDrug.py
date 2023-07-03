@@ -175,6 +175,10 @@ def main():
     diag_kg_voc = dill.load(open("../data/output/diseases_map.pkl", "rb"))
     kg_edge = dill.load(open("../data/output/new_kg_edges.pkl", "rb"))
     """"""
+
+    """自己写的读取知识图谱中transE"""
+    pretrained_embed = np.load("../data/output/new_DRKG_TransE_entity.npy")
+
     data = data[:5]  # 本地电脑上测试用5个数据
 
     split_point = int(len(data) * 2 / 3)
@@ -193,6 +197,7 @@ def main():
         ddi_mask_H,
         emb_dim=args.dim,
         device=device,
+        pretrained_embed=pretrained_embed
     )
     # model.load_state_dict(torch.load(open(args.resume_path, 'rb')))
 
@@ -295,6 +300,10 @@ def main():
 
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
+
+                # 梯度裁剪，用来防止训练到某个时间点突然结果爆炸低，同时不会改变
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
                 optimizer.step()
 
             llprint("\rtraining step: {} / {}".format(step, len(data_train)))
