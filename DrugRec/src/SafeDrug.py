@@ -149,8 +149,8 @@ def main():
     ddi_mask_path = "../data/output/ddi_mask_H.pkl"
     molecule_path = "../data/output/atc3toSMILES.pkl"
 
-    device = torch.device("cpu")
-    # device = torch.device("cuda")
+    # device = torch.device("cpu")
+    device = torch.device("cuda")
 
     ddi_adj = dill.load(open(ddi_adj_path, "rb"))
     ddi_mask_H = dill.load(open(ddi_mask_path, "rb"))
@@ -179,7 +179,7 @@ def main():
     """自己写的读取知识图谱中transE"""
     pretrained_embed = np.load("../data/output/new_DRKG_TransE_entity.npy")
 
-    data = data[:5]  # 本地电脑上测试用5个数据
+    # data = data[:5]  # 本地电脑上测试用5个数据
 
     split_point = int(len(data) * 2 / 3)
     data_train = data[:split_point]
@@ -252,8 +252,8 @@ def main():
     history = defaultdict(list)
     best_epoch, best_ja = 0, 0
 
-    # EPOCH = 50
-    EPOCH = 3  # 测试用3个epoch
+    EPOCH = 50
+    # EPOCH = 3  # 测试用3个epoch
     for epoch in range(EPOCH):
         tic = time.time()
         print("\nepoch {} --------------------------".format(epoch + 1))
