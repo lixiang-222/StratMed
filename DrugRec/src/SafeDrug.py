@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
+from torch.optim.lr_scheduler import LambdaLR
 
 from models import SafeDrugModel
 from util import llprint, multi_label_metric, ddi_rate_score
@@ -40,7 +41,7 @@ args = parser.parse_args()
 
 
 # evaluate
-def eval(model, data_eval, voc_size, epoch, med_kg_voc, diag_kg_voc, kg_edge, device):
+def eval(model, data_eval, voc_size, epoch, device):
     model.eval()
 
     smm_record = []
@@ -53,7 +54,7 @@ def eval(model, data_eval, voc_size, epoch, med_kg_voc, diag_kg_voc, kg_edge, de
     for step, input in enumerate(data_eval):
         y_gt, y_pred, y_pred_prob, y_pred_label = [], [], [], []
         for adm_idx, adm in enumerate(input):
-            target_output, _ = model(input[: adm_idx + 1], med_kg_voc, diag_kg_voc, kg_edge)
+            target_output, _ = model(input[: adm_idx + 1])
 
             """自己加的loss，在输出时候用来看loss的改变，不训练"""
             loss_bce_target = np.zeros((1, voc_size[2]))
@@ -149,8 +150,8 @@ def main():
     ddi_mask_path = "../data/output/ddi_mask_H.pkl"
     molecule_path = "../data/output/atc3toSMILES.pkl"
 
-    # device = torch.device("cpu")
-    device = torch.device("cuda")
+    device = torch.device("cpu")
+    # device = torch.device("cuda")
 
     ddi_adj = dill.load(open(ddi_adj_path, "rb"))
     ddi_mask_H = dill.load(open(ddi_mask_path, "rb"))
@@ -171,25 +172,21 @@ def main():
     """"""
 
     """自己写的药物和图谱中药物的映射"""
-    med_kg_voc = dill.load(open("../data/output/med_map.pkl", "rb"))
-    diag_kg_voc = dill.load(open("../data/output/diseases_map.pkl", "rb"))
-    kg_edge = dill.load(open("../data/output/new_kg_edges.pkl", "rb"))
+    # med_kg_voc = dill.load(open("../data/output/med_map.pkl", "rb"))
+    # diag_kg_voc = dill.load(open("../data/output/diseases_map.pkl", "rb"))
+    # kg_edge = dill.load(open("../data/output/new_kg_edges.pkl", "rb"))
     """"""
 
     """自己写的读取知识图谱中transE"""
     pretrained_embed = np.load("../data/output/new_DRKG_TransE_entity.npy")
 
-    # data = data[:5]  # 本地电脑上测试用5个数据
+    data = data[:5]  # 本地电脑上测试用5个数据
 
     split_point = int(len(data) * 2 / 3)
     data_train = data[:split_point]
     eval_len = int(len(data[split_point:]) / 2)
     data_test = data[split_point: split_point + eval_len]
     data_eval = data[split_point + eval_len:]
-
-    # MPNNSet, N_fingerprint, average_projection = buildMPNN(
-    #     molecule, med_voc.idx2word, 2, device
-    # )
 
     model = SafeDrugModel(
         voc_size,
@@ -199,34 +196,19 @@ def main():
         device=device,
         pretrained_embed=pretrained_embed
     )
-    # model.load_state_dict(torch.load(open(args.resume_path, 'rb')))
 
     if args.Test:
         model.load_state_dict(torch.load(open(args.resume_path, "rb")))
         model.to(device=device)
         tic = time.time()
 
-        ddi_list, ja_list, prauc_list, f1_list, med_list = [], [], [], [], []
-        # ###
-        # for threshold in np.linspace(0.00, 0.20, 30):
-        #     print ('threshold = {}'.format(threshold))
-        #     ddi, ja, prauc, _, _, f1, avg_med = eval(model, data_test, voc_size, 0, threshold)
-        #     ddi_list.append(ddi)
-        #     ja_list.append(ja)
-        #     prauc_list.append(prauc)
-        #     f1_list.append(f1)
-        #     med_list.append(avg_med)
-        # total = [ddi_list, ja_list, prauc_list, f1_list, med_list]
-        # with open('ablation_ddi.pkl', 'wb') as infile:
-        #     dill.dump(total, infile)
-        # ###
         result = []
         for _ in range(10):
             test_sample = np.random.choice(
                 data_test, round(len(data_test) * 0.8), replace=True
             )
             ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_med = eval(
-                model, data_eval, voc_size, 0, med_kg_voc, diag_kg_voc, kg_edge, device
+                model, data_eval, voc_size, 0, device
             )
             result.append([ddi_rate, ja, avg_f1, prauc, avg_med])
 
@@ -244,20 +226,31 @@ def main():
         return
 
     model.to(device=device)
-    # print('parameters', get_n_params(model))
-    # exit()
     optimizer = Adam(list(model.parameters()), lr=args.lr)
+    # 定义学习率调度器
+    warmup_epochs = 10  # warmup 的总轮数
+    warmup_factor = 0.1  # warmup 学习率的初始倍数
+
+    def warmup_lambda(epoch):
+        if epoch < warmup_epochs:
+            progress = epoch / warmup_epochs
+            return warmup_factor * (1 - progress) + progress
+        return 1.0
+
+    scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
 
     # start iterations
     history = defaultdict(list)
     best_epoch, best_ja = 0, 0
 
-    EPOCH = 50
-    # EPOCH = 3  # 测试用3个epoch
+    # EPOCH = 50
+    EPOCH = 3  # 测试用3个epoch
     for epoch in range(EPOCH):
         tic = time.time()
         print("\nepoch {} --------------------------".format(epoch + 1))
 
+        # 按照马老师意见修改的
+        loss_total = 0
         model.train()
         for step, input in enumerate(data_train):
 
@@ -272,7 +265,7 @@ def main():
                 for idx, item in enumerate(adm[2]):
                     loss_multi_target[0][idx] = item
 
-                result, loss_ddi = model(seq_input, med_kg_voc, diag_kg_voc, kg_edge)
+                result, loss_ddi = model(seq_input)
 
                 loss_bce = F.binary_cross_entropy_with_logits(
                     result, torch.FloatTensor(loss_bce_target).to(device)
@@ -301,17 +294,22 @@ def main():
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
 
-                # 梯度裁剪，用来防止训练到某个时间点突然结果爆炸低，同时不会改变
+                loss_total += loss
+                # 梯度裁剪
                 # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
                 optimizer.step()
 
             llprint("\rtraining step: {} / {}".format(step, len(data_train)))
 
+        # 试试网上给的方法
+        scheduler.step(epoch)
+        with torch.no_grad():
+            print("\nloss_total = ", loss_total / step)
         print()
         tic2 = time.time()
         ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_med = eval(
-            model, data_eval, voc_size, epoch, med_kg_voc, diag_kg_voc, kg_edge, device
+            model, data_eval, voc_size, epoch, device
         )
         print(
             "training time: {}, test time: {}".format(
