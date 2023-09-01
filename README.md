@@ -1,5 +1,4 @@
 # StratMed
-Related papers：https://arxiv.org/abs/2308.16781
 
 ## Folder Specification
 
@@ -66,3 +65,4 @@ cd src
 python main.py
 ```
 
+Related papers：https://arxiv.org/abs/2308.16781
