@@ -42,11 +42,11 @@ Related papers：https://arxiv.org/abs/2308.16781
 conda create -n StratMed python=3.9
 conda activate StratMed
 pip3 install torch torchvision torchaudio
-pip install scikit-learn
-pip install dill
-pip install dnc
-pip install pytorch_geometric
-pip install numpy = 1.22.3
+pip3 install scikit-learn
+pip3 install dill
+pip3 install dnc
+pip3 install pytorch_geometric
+pip3 install numpy = 1.22.3
 ```
 - If you still need another package, please proceed with the installation as described above
 
