@@ -1,6 +1,5 @@
 import argparse
 import math
-import os
 import time
 from collections import defaultdict
 
@@ -20,12 +19,13 @@ np.random.seed(2048)
 parser = argparse.ArgumentParser()
 # 模式参数
 parser.add_argument("--debug", default=False, help="debug mode")
-parser.add_argument("--Test", action="store_true", default=True, help="test mode")
+parser.add_argument("--Test", action="store_true", default=False, help="test mode")
 parser.add_argument("--pretrain", default=False, help="re-pretrain this time")
 
 # 设备参数
 parser.add_argument("--cuda", type=int, default=1, help="which cuda")
-parser.add_argument("--resume_path", default="trained/trained_model.pt", help="trained model")
+parser.add_argument("--resume_path_trained", default="trained/trained_model.pt", help="trained model")
+parser.add_argument("--resume_path_pretrained", default="trained/pretrained_model.pt", help="pretrained model")
 
 # 训练参数
 parser.add_argument("--lr", type=float, default=5e-4, help="learning rate")
@@ -161,7 +161,11 @@ def pre_training(data_train, data_eval, voc_size, ddi_adj, ddi_mask_H, device):
     )
     pretrained_model.to(device=device)
 
-    if args.pretrain or args.Test == False:
+    if not args.pretrain or args.Test:
+        pretrained_model.load_state_dict(torch.load(args.resume_path_pretrained, map_location=device))
+        return pretrained_model
+
+    else:
         regular = Regularization(pretrained_model, args.regular, p=0)  # 正则化模型
 
         optimizer = Adam(list(pretrained_model.parameters()), lr=args.lr)
@@ -242,11 +246,8 @@ def pre_training(data_train, data_eval, voc_size, ddi_adj, ddi_mask_H, device):
                 print(
                     "best_epoch: {}, best_ja: {:.4}".format(best_epoch, best_ja))
         #
-        torch.save(best_model.state_dict(), "pretrained/pretrained_model.pt")
+        torch.save(best_model.state_dict(), args.resume_path_pretrained)
         return best_model
-    else:
-        pretrained_model.load_state_dict(torch.load("pretrained/pretrained_model.pt", map_location=device))
-        return pretrained_model
 
 
 def relevance_mining(records, voc_size):
@@ -385,7 +386,7 @@ def main():
     )
 
     if args.Test:
-        model.load_state_dict(torch.load(open(args.resume_path, 'rb'), map_location=device))
+        model.load_state_dict(torch.load(open(args.resume_path_trained, 'rb'), map_location=device))
         tic = time.time()
 
         ddi_list, ja_list, prauc_list, f1_list, med_list = [], [], [], [], []
@@ -522,7 +523,7 @@ def main():
 
     torch.save(best['model'].state_dict(), "results/trained_model_ja{:.4}.pt".format(best['ja']))
 
-    result_output(history, history_on_train, best, regular)
+    # result_output(history, history_on_train, best, regular)
 
 
 if __name__ == "__main__":
