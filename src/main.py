@@ -488,8 +488,8 @@ def main():
         ddi_rate, ja, prauc, avg_p, avg_r, avg_f1, avg_loss, avg_med = eval(
             model, data_eval, voc_size, epoch, device
         )
-        # print("\n训练集结果：")
-        # _, ja_on_train, _, _, _, _, avg_loss_on_train, _ = eval(model, data_train, voc_size, epoch, device)
+        print("\n训练集结果：")
+        _, ja_on_train, _, _, _, _, avg_loss_on_train, _ = eval(model, data_train, voc_size, epoch, device)
 
         print(
             "training time: {}, test time: {}".format(
@@ -506,8 +506,8 @@ def main():
         history["med"].append(avg_med)
         history['loss'].append(avg_loss)
 
-        # history_on_train["ja"].append(ja_on_train)
-        # history_on_train["loss"].append(avg_loss_on_train)
+        history_on_train["ja"].append(ja_on_train)
+        history_on_train["loss"].append(avg_loss_on_train)
 
         if epoch != 0:
             if best['ja'] < ja:
@@ -523,7 +523,7 @@ def main():
 
     torch.save(best['model'].state_dict(), "results/trained_model_ja{:.4}.pt".format(best['ja']))
 
-    # result_output(history, history_on_train, best, regular)
+    result_output(history, history_on_train, best, regular)
 
 
 if __name__ == "__main__":
