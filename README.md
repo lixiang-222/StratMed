@@ -65,4 +65,4 @@ cd src
 python main.py
 ```
 
-Related papers：https://arxiv.org/abs/2308.16781
+Related papers：https://www.sciencedirect.com/science/article/pii/S0950705123009887
