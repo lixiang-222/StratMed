@@ -65,4 +65,5 @@ cd src
 python main.py
 ```
 
-Related papers：https://www.sciencedirect.com/science/article/pii/S0950705123009887
+## Citation & Acknowledgement
+We are grateful to everyone who contributed to this project. The article has been published in the journal Knowledge-Based System. You are welcome to quote our work or provide valuable guidance. Related papers：https://www.sciencedirect.com/science/article/pii/S0950705123009887
