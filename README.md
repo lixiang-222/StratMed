@@ -67,3 +67,14 @@ python main.py
 
 ## Citation & Acknowledgement
 We are grateful to everyone who contributed to this project. The article has been published in the journal Knowledge-Based System. You are welcome to quote our work or provide valuable guidance. Related papers：https://www.sciencedirect.com/science/article/pii/S0950705123009887
+```bash
+@article{li2024stratmed,
+  title={StratMed: Relevance stratification between biomedical entities for sparsity on medication recommendation},
+  author={Li, Xiang and Liang, Shunpan and Hou, Yulei and Ma, Tengfei},
+  journal={Knowledge-Based Systems},
+  volume={284},
+  pages={111239},
+  year={2024},
+  publisher={Elsevier}
+}
+```
